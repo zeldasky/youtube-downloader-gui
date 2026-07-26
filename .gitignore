@@ -1,0 +1,26 @@
+# ---- 빌드 산출물 ----
+# PyInstaller 가 만드는 것들. build_portable.ps1 로 언제든 다시 생성된다.
+build/
+dist/
+*.spec
+
+# ---- 내장 바이너리 캐시 ----
+# yt-dlp / ffmpeg / qjs 원본. 합계 150MB 가 넘고 업스트림에서 받으면 되므로 추적하지 않는다.
+_bincache/
+
+# ---- 배포 패키지 ----
+YouTube다운로더_포터블.zip
+YouTube다운로더_포터블/
+*.zip
+
+# ---- 파이썬 ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- 기타 ----
+ytdl_selftest.txt
+Thumbs.db
+desktop.ini
