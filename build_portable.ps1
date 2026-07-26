@@ -9,7 +9,18 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
 
 $Root    = $PSScriptRoot
-$Python  = "C:\Python314\python.exe"
+
+# 파이썬 찾기: PATH 우선, 없으면 흔한 설치 위치를 뒤진다
+$Python = (Get-Command python.exe -ErrorAction SilentlyContinue).Source
+if (-not $Python) {
+    $Python = Get-ChildItem "C:\Python3*\python.exe", "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe" `
+        -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+}
+if (-not $Python) {
+    throw "파이썬을 찾을 수 없습니다. https://www.python.org 에서 설치한 뒤 다시 실행하세요."
+}
+Write-Host "파이썬: $Python"
+
 $AppName = "YouTubeDownloader"
 $ExeName = "YouTube 다운로더.exe"
 $Cache   = Join-Path $Root "_bincache"
