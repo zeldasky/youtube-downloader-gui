@@ -6,8 +6,8 @@
 
 | 항목 | 설명 |
 |------|------|
-| `YouTube다운로더_포터블.zip` (87.6MB) | **배포용.** 다른 사람에게 이 파일만 주면 된다 |
-| `dist\YouTubeDownloader\` (185.3MB) | 압축 전 포터블 폴더 |
+| `YouTube다운로더_포터블.zip` (87.3MB) | **배포용.** 다른 사람에게 이 파일만 주면 된다 |
+| `dist\YouTubeDownloader\` (184.9MB) | 압축 전 포터블 폴더 |
 | `ytdl_gui.py` | 앱 소스 |
 | `build_portable.ps1` | 재빌드 스크립트 |
 | `사용법.txt` | 받는 사람용 안내문 (ZIP 안에 동봉됨) |
@@ -25,7 +25,7 @@
 
 | 파일 | 버전 | 역할 | 라이선스 |
 |------|------|------|----------|
-| `bin\yt-dlp.exe` | 2026.07.04 | 다운로드 | Unlicense |
+| `bin\yt-dlp.exe` | 2026.08.19 (빌드할 때마다 최신판) | 다운로드 | Unlicense |
 | `bin\ffmpeg.exe` + `ffprobe.exe` + DLL | n8.1.2 | 화질 병합·MP3 변환 | LGPL v2.1+ |
 | `bin\qjs.exe` | QuickJS-ng 0.15.1 | 유튜브 추출용 JS 엔진 | MIT |
 
@@ -65,9 +65,12 @@
 powershell -ExecutionPolicy Bypass -File build_portable.ps1
 ```
 
-`ytdl_gui.py` 수정 후 실행하면 `dist\` 와 ZIP 이 다시 만들어진다. 바이너리는 `_bincache\` 에 캐시되어 재다운로드하지 않는다.
+`ytdl_gui.py` 수정 후 실행하면 `dist\` 와 ZIP 이 다시 만들어진다.
 
-빌드에는 PyInstaller 가 필요하다 (`python -m pip install pyinstaller`, 현재 6.21.0 설치됨).
+- **yt-dlp 는 빌드할 때마다 최신판을 새로 받는다.** 예전에는 `_bincache\` 에 한 번 받아 둔 것을 계속 써서 포터블판이 낡은 yt-dlp 로 나갔다.
+- ffmpeg·qjs 는 `_bincache\` 에 캐시되어 재다운로드하지 않는다.
+- 빌드에는 PyInstaller 가 필요하다 (`python -m pip install pyinstaller`). 스크립트는 PATH·흔한 설치 위치의 파이썬 중 **PyInstaller 가 있는 것**을 고른다.
+- `build_portable.ps1` 은 **UTF-8 BOM** 으로 저장해야 한다. BOM 이 없으면 Windows PowerShell 5.1 이 한글을 ANSI 로 읽어 파싱 오류가 난다.
 
 > `--noconfirm` 이 `dist` 를 비우므로 **빌드 후에** `bin` 을 복사해야 한다. 스크립트는 이 순서를 지킨다.
 
@@ -82,16 +85,37 @@ type "$env:TEMP\ytdl_selftest.txt"
 
 windowed 빌드는 콘솔이 없어 결과를 파일로 남긴다. 각 바이너리를 실제로 실행해 버전까지 확인한다.
 
+### HTTP Error 403: Forbidden
+
+`ERROR: unable to download video data: HTTP Error 403: Forbidden` 은 대개 **yt-dlp 가 오래돼서** 생긴다. 2026-09-26 에 같은 4K 영상으로 확인한 결과:
+
+| yt-dlp | 접속 방식 | 결과 |
+|---|---|---|
+| 2026.03.17 (KMPlayer 동봉) | android vr | 4.3%(약 180MB) 지점에서 403 |
+| 2026.07.04 (v1.0 포터블 내장) | android vr | 4.3% 지점에서 403 |
+| 2026.08.19 | visionos | 정상 (25초 동안 8.9% 까지 오류 없음) |
+
+앞 10KB 만 받는 `--test` 로는 세 버전 모두 성공했다 — 받는 도중에 끊기는 문제라 실제로 받아 봐야 드러난다.
+
+앱은 시작할 때 로그에 yt-dlp 버전과 며칠 된 것인지를 적고, **60일이 넘으면 경고**한다. 403 이 나면 업데이트 안내를 덧붙인다. **[도구] > [다운로더 업데이트]** 는 `yt-dlp -U` 를 돌리는데, `C:\Program Files` 아래 exe(KMPlayer 동봉본)는 덮어쓰려면 관리자 권한이 필요할 수 있다. 실패하면 앱이 최신 yt-dlp.exe 를 받아 직접 지정하라고 안내한다.
+
+### 로그의 한글 제목이 깨짐
+
+yt-dlp 는 파이프로 내보낼 때 윈도우 코드페이지(cp949)를 쓰고 앱은 UTF-8 로 읽어서 로그의 한글이 `����` 로 보였다(저장되는 파일 이름은 정상). v1.1 부터 `--encoding utf-8` 을 넘긴다.
+
 ## 탐지 순서
 
 앱은 실행할 때마다 이 순서로 구성 요소를 찾는다.
 
-1. 내장 `bin\` 폴더 ← 포터블판은 여기서 전부 해결
-2. 앱 폴더
-3. 시스템 `PATH`
-4. 알려진 설치 경로 (KMPlayer 동봉본 등)
+1. **[도구] > [다운로더 실행 파일 지정]** 으로 직접 고른 yt-dlp (설정 `custom_downloader_path`)
+2. 내장 `bin\` 폴더 ← 포터블판은 여기서 전부 해결
+3. 앱 폴더
+4. 시스템 `PATH`
+5. 알려진 설치 경로 (KMPlayer 동봉본 등)
 
-내장본이 없으면 시스템 설치본으로 자동 대체되므로, 소스에서 직접 실행할 때도 그대로 동작한다.
+내장본이 없으면 시스템 설치본으로 자동 대체되므로, 소스에서 직접 실행할 때도 그대로 동작한다. 다만 소스 폴더에는 `bin\` 이 없어 KMPlayer 동봉본 같은 낡은 yt-dlp 가 잡힐 수 있다 — 평소에는 포터블판 exe 를 쓴다.
+
+설정에는 **직접 고른 경로만** 저장한다. v1.0 은 자동 탐지 결과(`downloader_path`)까지 저장해서, 한 번 잡힌 KMPlayer 동봉본이 굳어 내장 최신판을 가렸다. v1.1 은 그 값을 읽지 않는다. 직접 고른 경로는 **[도구] > [다운로더 자동 탐지로 되돌리기]** 로 푼다.
 
 ## 검증 기록
 
@@ -102,6 +126,13 @@ windowed 빌드는 콘솔이 없어 결과를 파일로 남긴다. 각 바이너
 - MP3 변환 — 썸네일·메타데이터 임베드 성공
 - GUI 정상 표시 (창 제목 `YouTube 다운로더 v1.0`)
 - 폴더 경로를 바꿔도 동작 (경로 비의존)
+
+v1.1 (2026-09-26):
+
+- 4K 영상을 35초 동안 받아 403 지점(4.3%)을 넘겨 9.7% 까지 오류 없이 진행, 로그의 한글 제목 정상
+- 예전 형식 설정(`downloader_path` = KMPlayer 동봉본)이 있어도 내장 `bin\yt-dlp.exe` 를 잡음
+- KMPlayer 동봉본을 직접 지정하면 "193일 된 버전" 경고, 403 뒤 업데이트 안내 표시
+- ZIP 을 푼 폴더에서 창 제목 `YouTube 다운로더 v1.1` 확인
 
 ## 참고
 

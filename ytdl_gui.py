@@ -4,6 +4,7 @@ YouTube 다운로더 (Windows GUI)
 yt-dlp / yl.exe 커맨드라인 프로그램을 감싸는 tkinter 앱.
 """
 
+import datetime
 import json
 import os
 import re
@@ -16,7 +17,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext, font as tkfont
 
 APP_NAME = "YouTube 다운로더"
-APP_VERSION = "1.0"
+APP_VERSION = "1.1"
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
@@ -56,6 +57,10 @@ QUALITY_HINT = {
         "하": "MP3 저용량 (약 128kbps)",
     },
 }
+
+# yt-dlp 버전은 배포 날짜(YYYY.MM.DD)다. 유튜브가 자주 바뀌어 이보다 오래된 버전은
+# 다운로드 도중 HTTP 403 으로 끊기곤 한다 (2026.03.17·2026.07.04 가 4.3% 지점에서 403, 2026.08.19 는 정상).
+STALE_DAYS = 60
 
 # yl.exe / yt-dlp.exe 자동 탐지 후보
 EXE_CANDIDATES = [
@@ -150,6 +155,31 @@ def find_js_runtime():
     return "", ""
 
 
+def downloader_version(path):
+    """다운로더의 --version 출력. 실패하면 빈 문자열."""
+    try:
+        out = subprocess.run(
+            [path, "--version"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            creationflags=CREATE_NO_WINDOW, timeout=60, env=subprocess_env(),
+        )
+        return (out.stdout or out.stderr).strip()
+    except Exception:
+        return ""
+
+
+def version_age_days(version):
+    """'2026.08.19' 같은 yt-dlp 버전이 며칠 전 것인지. 날짜 형식이 아니면 None."""
+    m = re.match(r"(\d{4})\.(\d{1,2})\.(\d{1,2})", version or "")
+    if not m:
+        return None
+    try:
+        released = datetime.date(*(int(g) for g in m.groups()))
+    except ValueError:
+        return None
+    return (datetime.date.today() - released).days
+
+
 def load_config():
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -178,7 +208,13 @@ class DownloaderApp:
         self.stop_requested = False
         self.msg_queue = queue.Queue()
 
-        self.downloader_path = self.cfg.get("downloader_path") or find_downloader()
+        # 설정에는 [다운로더 실행 파일 지정] 으로 직접 고른 경로만 남긴다.
+        # 예전 "downloader_path" 는 자동 탐지 결과까지 저장해 한 번 잡힌 경로(예: KMPlayer 동봉본)가
+        # 굳어 버렸고, 내장 bin 에 새 yt-dlp 가 있어도 쓰이지 않았다. 그래서 그 값은 읽지 않는다.
+        self.custom_downloader = self.cfg.get("custom_downloader_path", "")
+        if self.custom_downloader and not os.path.isfile(self.custom_downloader):
+            self.custom_downloader = ""
+        self.downloader_path = self.custom_downloader or find_downloader()
         self.ffmpeg_dir = find_ffmpeg_dir()
         self.js_runtime, self.js_runtime_path = find_js_runtime()
 
@@ -372,6 +408,9 @@ class DownloaderApp:
             label="다운로더 실행 파일 지정... (yl.exe / yt-dlp.exe)",
             command=self.choose_downloader,
         )
+        m_tool.add_command(
+            label="다운로더 자동 탐지로 되돌리기", command=self.reset_downloader
+        )
         m_tool.add_command(label="다운로더 버전 확인", command=self.show_downloader_version)
         m_tool.add_command(label="다운로더 업데이트", command=self.update_downloader)
         m_tool.add_separator()
@@ -403,7 +442,9 @@ class DownloaderApp:
 
     def _check_downloader(self):
         if self.downloader_path and os.path.isfile(self.downloader_path):
-            self.write_log(f"[준비] 다운로더: {self.downloader_path}")
+            how = "직접 지정" if self.custom_downloader else "자동 탐지"
+            self.write_log(f"[준비] 다운로더({how}): {self.downloader_path}")
+            self._report_version_async()
             if self.ffmpeg_dir:
                 self.write_log(f"[준비] ffmpeg: {self.ffmpeg_dir}")
             else:
@@ -424,6 +465,30 @@ class DownloaderApp:
                 "[오류] yl.exe / yt-dlp.exe 를 찾지 못했습니다. "
                 "[도구] > [다운로더 실행 파일 지정] 에서 직접 선택하세요."
             )
+
+    def _report_version_async(self):
+        """다운로더 버전을 로그에 남기고, 오래됐으면 업데이트를 권한다.
+
+        yt-dlp 는 단일 exe 라 --version 에도 1~2초 걸려서 창이 멈추지 않게 스레드로 돈다.
+        """
+        path = self.downloader_path
+
+        def run():
+            ver = downloader_version(path)
+            if not ver:
+                self.msg_queue.put(("log", "[경고] 다운로더 버전을 확인하지 못했습니다."))
+                return
+            age = version_age_days(ver)
+            note = f" ({age}일 전 버전)" if age is not None else ""
+            self.msg_queue.put(("log", f"[준비] 다운로더 버전: {ver}{note}"))
+            if age is not None and age > STALE_DAYS:
+                self.msg_queue.put((
+                    "log",
+                    f"[경고] 다운로더가 {age}일 된 버전입니다. 유튜브 다운로드가 "
+                    "HTTP 403 으로 끊길 수 있습니다 → [도구] > [다운로더 업데이트]",
+                ))
+
+        threading.Thread(target=run, daemon=True).start()
 
     # ------------------------------------------------------------ 목록 조작
     def add_url(self):
@@ -531,25 +596,34 @@ class DownloaderApp:
             filetypes=[("실행 파일", "*.exe"), ("모든 파일", "*.*")],
         )
         if path:
-            self.downloader_path = os.path.normpath(path)
+            self.custom_downloader = os.path.normpath(path)
+            self.downloader_path = self.custom_downloader
             self.persist()
-            self.write_log(f"[설정] 다운로더 경로: {self.downloader_path}")
+            self.write_log(f"[설정] 다운로더 경로(직접 지정): {self.downloader_path}")
+            self._report_version_async()
+
+    def reset_downloader(self):
+        self.custom_downloader = ""
+        self.downloader_path = find_downloader()
+        self.persist()
+        if self.downloader_path:
+            self.write_log(f"[설정] 다운로더 경로(자동 탐지): {self.downloader_path}")
+            self._report_version_async()
+        else:
+            self.write_log("[오류] yl.exe / yt-dlp.exe 를 찾지 못했습니다.")
 
     def show_downloader_version(self):
         if not self._require_downloader():
             return
-        try:
-            out = subprocess.run(
-                [self.downloader_path, "--version"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                creationflags=CREATE_NO_WINDOW, timeout=30, env=subprocess_env(),
-            )
-            ver = (out.stdout or out.stderr).strip()
-            messagebox.showinfo(
-                APP_NAME, f"실행 파일:\n{self.downloader_path}\n\n버전: {ver}"
-            )
-        except Exception as e:
-            messagebox.showerror(APP_NAME, f"버전을 확인할 수 없습니다:\n{e}")
+        ver = downloader_version(self.downloader_path)
+        if not ver:
+            messagebox.showerror(APP_NAME, "버전을 확인할 수 없습니다.")
+            return
+        age = version_age_days(ver)
+        note = f" ({age}일 전 버전)" if age is not None else ""
+        messagebox.showinfo(
+            APP_NAME, f"실행 파일:\n{self.downloader_path}\n\n버전: {ver}{note}"
+        )
 
     def update_downloader(self):
         if not self._require_downloader():
@@ -571,6 +645,17 @@ class DownloaderApp:
                         self.msg_queue.put(("log", "[업데이트] " + line.strip()))
             except Exception as e:
                 self.msg_queue.put(("log", f"[업데이트] 실패: {e}"))
+                return
+            if out.returncode != 0:
+                # C:\Program Files 아래 exe(KMPlayer 동봉본 등)는 관리자 권한 없이 덮어쓸 수 없다
+                self.msg_queue.put((
+                    "log",
+                    "[업데이트] 실패. 프로그램 폴더의 exe 는 관리자 권한이 필요할 수 있습니다. "
+                    "최신 yt-dlp.exe 를 받아 [도구] > [다운로더 실행 파일 지정] 으로 고르세요.",
+                ))
+            ver = downloader_version(self.downloader_path)
+            if ver:
+                self.msg_queue.put(("log", f"[업데이트] 현재 버전: {ver}"))
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -590,7 +675,7 @@ class DownloaderApp:
     def persist(self):
         save_config(
             {
-                "downloader_path": self.downloader_path,
+                "custom_downloader_path": self.custom_downloader,
                 "output_dir": self.var_outdir.get(),
                 "mode": self.var_mode.get(),
                 "quality": self.var_quality.get(),
@@ -619,6 +704,9 @@ class DownloaderApp:
             "--newline",
             "--no-update",
             "--color", "never",
+            # 파이프로 내보낼 때 yt-dlp 는 윈도우 코드페이지(cp949)를 쓴다. 이 앱은 UTF-8 로
+            # 읽으므로 맞춰 주지 않으면 로그의 한글 제목이 깨진다 (파일 이름 자체는 정상).
+            "--encoding", "utf-8",
             "--progress-template", PROGRESS_TEMPLATE,
             "--windows-filenames",
             "--no-mtime",
@@ -764,6 +852,7 @@ class DownloaderApp:
             self.msg_queue.put(("log", f"[오류] 실행 실패: {e}"))
             return -1
 
+        got_403 = False
         try:
             for raw in self.proc.stdout:
                 line = strip_ansi(raw).rstrip()
@@ -785,6 +874,8 @@ class DownloaderApp:
 
                 self.msg_queue.put(("log", line))
 
+                if "HTTP Error 403" in line:
+                    got_403 = True
                 if "[download] Destination:" in line:
                     self.msg_queue.put(
                         ("current", os.path.basename(line.split("Destination:", 1)[1].strip()))
@@ -803,6 +894,12 @@ class DownloaderApp:
 
         code = self.proc.returncode if self.proc.returncode is not None else -1
         self.proc = None
+        if got_403 and code != 0:
+            self.msg_queue.put((
+                "log",
+                "[안내] HTTP 403 은 대개 yt-dlp 가 오래돼서 생깁니다. "
+                "[도구] > [다운로더 업데이트] 후 다시 시도하세요.",
+            ))
         return code
 
     # -------------------------------------------------------- UI 메시지 펌프

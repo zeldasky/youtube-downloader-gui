@@ -1,23 +1,33 @@
-# 포터블판 재빌드 스크립트
+﻿# 포터블판 재빌드 스크립트
 #
 #   powershell -ExecutionPolicy Bypass -File build_portable.ps1
 #
 # ytdl_gui.py 를 수정한 뒤 이걸 실행하면 dist\YouTubeDownloader\ 와 ZIP 이 다시 만들어진다.
-# 내장 바이너리(yt-dlp/ffmpeg/qjs)는 이미 받아둔 게 있으면 재사용하고, 없으면 새로 받는다.
+# yt-dlp 는 빌드할 때마다 최신판을 새로 받는다 (유튜브가 자주 바뀌어 캐시해 두면 금방 낡는다).
+# ffmpeg/qjs 는 이미 받아둔 게 있으면 재사용하고, 없으면 새로 받는다.
+#
+# 이 파일은 UTF-8 BOM 으로 저장해야 한다. BOM 이 없으면 Windows PowerShell 5.1 이 한글을
+# ANSI(cp949)로 읽어 파싱 오류가 난다.
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
 
 $Root    = $PSScriptRoot
 
-# 파이썬 찾기: PATH 우선, 없으면 흔한 설치 위치를 뒤진다
-$Python = (Get-Command python.exe -ErrorAction SilentlyContinue).Source
-if (-not $Python) {
-    $Python = Get-ChildItem "C:\Python3*\python.exe", "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe" `
-        -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+# 파이썬 찾기: PyInstaller 가 설치된 파이썬을 고른다.
+# PATH 의 python 이 다른 프로젝트의 가상환경일 수 있어서, PATH 것을 무조건 쓰지 않는다.
+$candidates = @((Get-Command python.exe -ErrorAction SilentlyContinue).Source) +
+    @(Get-ChildItem "C:\Python3*\python.exe", "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe" `
+        -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -ExpandProperty FullName)
+$Python = $null
+foreach ($c in $candidates) {
+    if (-not $c) { continue }
+    # stderr 를 내지 않는 방식으로 확인한다 (5.1 은 Stop 모드에서 네이티브 stderr 를 예외로 만든다)
+    & $c -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('PyInstaller') else 1)"
+    if ($LASTEXITCODE -eq 0) { $Python = $c; break }
 }
 if (-not $Python) {
-    throw "파이썬을 찾을 수 없습니다. https://www.python.org 에서 설치한 뒤 다시 실행하세요."
+    throw "PyInstaller 가 설치된 파이썬을 찾을 수 없습니다. python -m pip install pyinstaller 후 다시 실행하세요."
 }
 Write-Host "파이썬: $Python"
 
@@ -34,10 +44,9 @@ $QjsUrl       = "https://github.com/quickjs-ng/quickjs/releases/download/v0.15.1
 New-Item -ItemType Directory -Force -Path $Cache | Out-Null
 
 # ---------------------------------------------------------------- 바이너리 준비
-if (-not (Test-Path "$Cache\yt-dlp.exe")) {
-    Write-Host "yt-dlp 내려받는 중..."
-    Invoke-WebRequest -Uri $YtDlpUrl -OutFile "$Cache\yt-dlp.exe" -UseBasicParsing
-}
+Write-Host "yt-dlp 최신판 내려받는 중..."
+Invoke-WebRequest -Uri $YtDlpUrl -OutFile "$Cache\yt-dlp.exe" -UseBasicParsing
+Write-Host "  yt-dlp $(& "$Cache\yt-dlp.exe" --version)"
 if (-not (Test-Path "$Cache\qjs.exe")) {
     Write-Host "QuickJS 내려받는 중..."
     Invoke-WebRequest -Uri $QjsUrl -OutFile "$Cache\qjs.exe" -UseBasicParsing
